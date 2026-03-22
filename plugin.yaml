@@ -1,0 +1,663 @@
+id: codeflow
+name: CodeFlow
+version: 1.0.0
+description: AI coding agent with structured Planning → Development → Review → Validation workflow
+author: Jhol Hewres
+license: MIT
+min_devclaw: "1.0.0"
+
+requires:
+  any_bins: ["git"]
+
+config:
+  fields:
+    - key: stage_planning
+      name: Planning Stage
+      description: Enable the planning stage before development
+      type: bool
+      default: true
+    - key: stage_development
+      name: Development Stage
+      description: Enable the development/coding stage
+      type: bool
+      default: true
+    - key: stage_review
+      name: Review Stage
+      description: Enable automated code review after development
+      type: bool
+      default: true
+    - key: stage_validation
+      name: Validation Stage
+      description: Enable test/lint/build validation (can be slow)
+      type: bool
+      default: false
+    - key: auto_approve_plan
+      name: Auto-approve Plan
+      description: Skip user approval of the plan and proceed directly to development
+      type: bool
+      default: false
+    - key: convention_file
+      name: Convention File
+      description: Path to conventions file (auto-detects CLAUDE.md, .cursorrules, CONVENTIONS.md if empty)
+      type: string
+      default: ""
+    - key: test_command
+      name: Test Command
+      description: Custom test command (auto-detects if empty)
+      type: string
+      default: ""
+    - key: lint_command
+      name: Lint Command
+      description: Custom lint command (auto-detects if empty)
+      type: string
+      default: ""
+    - key: build_command
+      name: Build Command
+      description: Custom build command (auto-detects if empty)
+      type: string
+      default: ""
+    - key: max_file_changes
+      name: Max File Changes
+      description: Safety limit on number of files that can be modified per session
+      type: int
+      default: 20
+    - key: working_directory
+      name: Working Directory
+      description: Base directory for all file operations (empty = current working directory)
+      type: string
+      default: ""
+
+ui:
+  icon: "code-2"
+  category: "development"
+  color: "#8B5CF6"
+  sections:
+    - title: Workflow Stages
+      description: Toggle individual stages of the coding workflow
+      fields: ["stage_planning", "stage_development", "stage_review", "stage_validation"]
+    - title: Behavior
+      description: Configure agent behavior and limits
+      fields: ["auto_approve_plan", "convention_file", "max_file_changes", "working_directory"]
+      collapsible: true
+    - title: Validation Commands
+      description: Custom commands for test, lint, and build steps
+      fields: ["test_command", "lint_command", "build_command"]
+      collapsible: true
+  actions:
+    - label: Run Tests
+      description: Execute the test suite
+      tool: codeflow_run_tests
+      icon: "play"
+    - label: Run Lint
+      description: Run the linter
+      tool: codeflow_run_lint
+      icon: "check-circle"
+    - label: Detect Stack
+      description: Detect project languages and frameworks
+      tool: codeflow_detect_stack
+      icon: "search"
+
+agents:
+  - id: coder
+    name: CodeFlow Agent
+    description: Structured coding agent that follows a Planning → Development → Review → Validation workflow
+    instructions: prompts/codeflow.md
+    triggers:
+      - "codeflow"
+      - "implement"
+      - "code this"
+      - "build this"
+      - "develop this"
+      - "write the code"
+    tools:
+      allow:
+        - read_file
+        - write_file
+        - edit_file
+        - list_files
+        - search_files
+        - glob_files
+        - bash
+        - git_status
+        - git_diff
+        - git_log
+        - web_search
+        - codeflow_stage_status
+        - codeflow_plan_submit
+        - codeflow_change_tracker
+        - codeflow_detect_stack
+        - codeflow_conventions
+        - codeflow_review_checklist
+        - codeflow_run_tests
+        - codeflow_run_lint
+        - codeflow_run_build
+        - codeflow_summary
+      deny:
+        - ssh
+        - scp
+        - group:vault
+        - group:subagents
+        - group:daemon
+        - group:browser
+    max_turns: 50
+    timeout_sec: 1200
+    session_mode: shared
+    escalation:
+      enabled: true
+      keywords:
+        - "I'm stuck"
+        - "need human help"
+        - "can't figure this out"
+        - "escalate"
+      max_turns: 45
+      explicit_only: false
+
+tools:
+  - name: stage_status
+    description: Returns the current configuration of workflow stages and plugin settings
+    parameters:
+      type: object
+      properties: {}
+    script: |
+      echo "=== CodeFlow Stage Configuration ==="
+      echo "Planning:    ${PLUGIN_CFG_STAGE_PLANNING:-true}"
+      echo "Development: ${PLUGIN_CFG_STAGE_DEVELOPMENT:-true}"
+      echo "Review:      ${PLUGIN_CFG_STAGE_REVIEW:-true}"
+      echo "Validation:  ${PLUGIN_CFG_STAGE_VALIDATION:-false}"
+      echo ""
+      echo "=== Settings ==="
+      echo "Auto-approve plan: ${PLUGIN_CFG_AUTO_APPROVE_PLAN:-false}"
+      echo "Convention file:   ${PLUGIN_CFG_CONVENTION_FILE:-(auto-detect)}"
+      echo "Max file changes:  ${PLUGIN_CFG_MAX_FILE_CHANGES:-20}"
+      echo "Working directory: ${PLUGIN_CFG_WORKING_DIRECTORY:-(cwd)}"
+      echo "Test command:      ${PLUGIN_CFG_TEST_COMMAND:-(auto-detect)}"
+      echo "Lint command:      ${PLUGIN_CFG_LINT_COMMAND:-(auto-detect)}"
+      echo "Build command:     ${PLUGIN_CFG_BUILD_COMMAND:-(auto-detect)}"
+
+  - name: plan_submit
+    description: Submit a structured implementation plan for user review before development begins
+    parameters:
+      type: object
+      properties:
+        summary:
+          type: string
+          description: Brief summary of the implementation approach
+        files:
+          type: string
+          description: Comma-separated list of files to create or modify
+        approach:
+          type: string
+          description: Detailed step-by-step approach
+        risks:
+          type: string
+          description: Potential risks and mitigation strategies
+        scope:
+          type: string
+          description: "Scope classification: small (<5 files), medium (5-15), large (>15)"
+      required: ["summary", "files", "approach"]
+    script: |
+      echo "=== Implementation Plan ==="
+      echo ""
+      echo "## Summary"
+      echo "${PLUGIN_SUMMARY}"
+      echo ""
+      echo "## Files to modify"
+      echo "${PLUGIN_FILES}" | tr ',' '\n' | while read -r f; do echo "- ${f}"; done
+      echo ""
+      echo "## Approach"
+      echo "${PLUGIN_APPROACH}"
+      if [ -n "${PLUGIN_RISKS}" ]; then
+        echo ""
+        echo "## Risks"
+        echo "${PLUGIN_RISKS}"
+      fi
+      echo ""
+      echo "## Scope: ${PLUGIN_SCOPE:-medium}"
+      echo ""
+      if [ "${PLUGIN_CFG_AUTO_APPROVE_PLAN}" = "true" ]; then
+        echo "✓ Plan auto-approved (auto_approve_plan=true)"
+      else
+        echo "⏳ Awaiting user approval. Please review and approve to proceed."
+      fi
+
+  - name: change_tracker
+    description: Track file mutations during development and enforce the max_file_changes safety limit
+    parameters:
+      type: object
+      properties:
+        action:
+          type: string
+          description: "Action: add (track a change), list (show tracked changes), count (get count)"
+        file:
+          type: string
+          description: File path that was changed (required for 'add' action)
+        operation:
+          type: string
+          description: "Type of change: create, modify, delete"
+      required: ["action"]
+    script: |
+      LOG_FILE="${PLUGIN_CFG_WORKING_DIRECTORY:-.}/.codeflow-changes.log"
+      MAX="${PLUGIN_CFG_MAX_FILE_CHANGES:-20}"
+
+      case "${PLUGIN_ACTION}" in
+        add)
+          if [ -z "${PLUGIN_FILE}" ]; then
+            echo "ERROR: file parameter required for 'add' action"
+            exit 1
+          fi
+          # Check if already tracked
+          if [ -f "$LOG_FILE" ] && grep -qF "${PLUGIN_FILE}" "$LOG_FILE"; then
+            echo "Already tracked: ${PLUGIN_FILE}"
+            exit 0
+          fi
+          COUNT=$([ -f "$LOG_FILE" ] && wc -l < "$LOG_FILE" || echo 0)
+          if [ "$COUNT" -ge "$MAX" ]; then
+            echo "ERROR: Max file changes limit reached (${MAX}). Cannot modify more files."
+            exit 1
+          fi
+          echo "${PLUGIN_OPERATION:-modify}|${PLUGIN_FILE}|$(date -Iseconds)" >> "$LOG_FILE"
+          echo "Tracked: ${PLUGIN_OPERATION:-modify} ${PLUGIN_FILE} ($((COUNT + 1))/${MAX})"
+          ;;
+        list)
+          if [ ! -f "$LOG_FILE" ]; then
+            echo "No changes tracked yet."
+            exit 0
+          fi
+          echo "=== Tracked Changes ==="
+          while IFS='|' read -r op file ts; do
+            echo "  ${op}: ${file} (${ts})"
+          done < "$LOG_FILE"
+          echo ""
+          echo "Total: $(wc -l < "$LOG_FILE")/${MAX}"
+          ;;
+        count)
+          if [ ! -f "$LOG_FILE" ]; then
+            echo "0"
+          else
+            wc -l < "$LOG_FILE"
+          fi
+          ;;
+        *)
+          echo "ERROR: Unknown action '${PLUGIN_ACTION}'. Use: add, list, count"
+          exit 1
+          ;;
+      esac
+
+  - name: detect_stack
+    description: Detect the project's technology stack — languages, frameworks, package manager, and common commands
+    parameters:
+      type: object
+      properties:
+        directory:
+          type: string
+          description: Directory to scan (defaults to working directory)
+    script: |
+      DIR="${PLUGIN_DIRECTORY:-${PLUGIN_CFG_WORKING_DIRECTORY:-.}}"
+      echo "=== Stack Detection: ${DIR} ==="
+      echo ""
+
+      # Languages
+      echo "## Languages"
+      [ -f "${DIR}/go.mod" ] && echo "- Go ($(head -1 "${DIR}/go.mod" | awk '{print $2}'))"
+      [ -f "${DIR}/package.json" ] && echo "- JavaScript/TypeScript"
+      [ -f "${DIR}/requirements.txt" ] || [ -f "${DIR}/pyproject.toml" ] && echo "- Python"
+      [ -f "${DIR}/Cargo.toml" ] && echo "- Rust"
+      [ -f "${DIR}/pom.xml" ] || [ -f "${DIR}/build.gradle" ] && echo "- Java"
+      echo ""
+
+      # Frameworks
+      echo "## Frameworks"
+      [ -f "${DIR}/package.json" ] && {
+        grep -q '"react"' "${DIR}/package.json" 2>/dev/null && echo "- React"
+        grep -q '"next"' "${DIR}/package.json" 2>/dev/null && echo "- Next.js"
+        grep -q '"vue"' "${DIR}/package.json" 2>/dev/null && echo "- Vue.js"
+        grep -q '"express"' "${DIR}/package.json" 2>/dev/null && echo "- Express"
+        grep -q '"vite"' "${DIR}/package.json" 2>/dev/null && echo "- Vite"
+        grep -q '"tailwindcss"' "${DIR}/package.json" 2>/dev/null && echo "- Tailwind CSS"
+      }
+      echo ""
+
+      # Package Manager
+      echo "## Package Manager"
+      [ -f "${DIR}/go.mod" ] && echo "- Go Modules"
+      [ -f "${DIR}/pnpm-lock.yaml" ] && echo "- pnpm"
+      [ -f "${DIR}/yarn.lock" ] && echo "- Yarn"
+      [ -f "${DIR}/package-lock.json" ] && echo "- npm"
+      [ -f "${DIR}/Pipfile.lock" ] && echo "- Pipenv"
+      [ -f "${DIR}/poetry.lock" ] && echo "- Poetry"
+      [ -f "${DIR}/Cargo.lock" ] && echo "- Cargo"
+      echo ""
+
+      # Build tools
+      echo "## Build & Config"
+      [ -f "${DIR}/Makefile" ] && echo "- Makefile"
+      [ -f "${DIR}/Dockerfile" ] && echo "- Docker"
+      [ -f "${DIR}/docker-compose.yml" ] || [ -f "${DIR}/docker-compose.yaml" ] && echo "- Docker Compose"
+      [ -f "${DIR}/tsconfig.json" ] && echo "- TypeScript"
+      [ -f "${DIR}/.eslintrc.js" ] || [ -f "${DIR}/.eslintrc.json" ] || [ -f "${DIR}/eslint.config.js" ] && echo "- ESLint"
+      [ -f "${DIR}/.prettierrc" ] || [ -f "${DIR}/.prettierrc.json" ] && echo "- Prettier"
+
+  - name: conventions
+    description: Read project conventions from CLAUDE.md, .cursorrules, CONVENTIONS.md, or a custom file
+    parameters:
+      type: object
+      properties:
+        file:
+          type: string
+          description: Specific conventions file to read (overrides auto-detection)
+    script: |
+      DIR="${PLUGIN_CFG_WORKING_DIRECTORY:-.}"
+      TARGET="${PLUGIN_FILE:-${PLUGIN_CFG_CONVENTION_FILE}}"
+
+      if [ -n "$TARGET" ]; then
+        if [ -f "$TARGET" ]; then
+          echo "=== Conventions: ${TARGET} ==="
+          cat "$TARGET"
+          exit 0
+        else
+          echo "ERROR: Convention file not found: ${TARGET}"
+          exit 1
+        fi
+      fi
+
+      # Auto-detect
+      for f in CLAUDE.md .cursorrules CONVENTIONS.md .editorconfig; do
+        if [ -f "${DIR}/${f}" ]; then
+          echo "=== Conventions: ${f} ==="
+          cat "${DIR}/${f}"
+          echo ""
+          echo "---"
+          echo ""
+        fi
+      done
+
+      # Check if any were found
+      FOUND=0
+      for f in CLAUDE.md .cursorrules CONVENTIONS.md .editorconfig; do
+        [ -f "${DIR}/${f}" ] && FOUND=1
+      done
+
+      if [ "$FOUND" -eq 0 ]; then
+        echo "No convention files found. Looked for: CLAUDE.md, .cursorrules, CONVENTIONS.md, .editorconfig"
+      fi
+
+  - name: review_checklist
+    description: Generate a code review checklist based on the current git diff
+    parameters:
+      type: object
+      properties:
+        scope:
+          type: string
+          description: "Review scope: staged (default), unstaged, all"
+    script: |
+      DIR="${PLUGIN_CFG_WORKING_DIRECTORY:-.}"
+      cd "$DIR" || exit 1
+
+      SCOPE="${PLUGIN_SCOPE:-staged}"
+      case "$SCOPE" in
+        staged)   DIFF=$(git diff --cached --stat 2>/dev/null) ;;
+        unstaged) DIFF=$(git diff --stat 2>/dev/null) ;;
+        all)      DIFF=$(git diff HEAD --stat 2>/dev/null) ;;
+      esac
+
+      if [ -z "$DIFF" ]; then
+        echo "No changes found for scope: ${SCOPE}"
+        exit 0
+      fi
+
+      echo "=== Code Review Checklist (${SCOPE}) ==="
+      echo ""
+      echo "### Changed Files"
+      echo "$DIFF"
+      echo ""
+      echo "### Checklist"
+      echo "- [ ] **Bugs**: No logic errors, off-by-one, nil/null pointer issues"
+      echo "- [ ] **Security**: No injection vulnerabilities (SQL, XSS, command), no hardcoded secrets"
+      echo "- [ ] **Error handling**: All errors checked, meaningful messages, no silent failures"
+      echo "- [ ] **Edge cases**: Empty inputs, boundary values, concurrent access handled"
+      echo "- [ ] **Conventions**: Naming, formatting, and patterns match project standards"
+      echo "- [ ] **Performance**: No N+1 queries, unnecessary allocations, or blocking calls"
+      echo "- [ ] **Tests**: New code has tests, existing tests still pass"
+      echo "- [ ] **Documentation**: Public APIs documented, complex logic commented"
+
+  - name: run_tests
+    description: Execute the project's test suite with auto-detection or a custom command
+    parameters:
+      type: object
+      properties:
+        target:
+          type: string
+          description: Specific test target or pattern (e.g., './pkg/...' or 'test:unit')
+    script: |
+      DIR="${PLUGIN_CFG_WORKING_DIRECTORY:-.}"
+      cd "$DIR" || exit 1
+
+      CMD="${PLUGIN_CFG_TEST_COMMAND}"
+      TARGET="${PLUGIN_TARGET}"
+
+      if [ -n "$CMD" ]; then
+        echo "Running custom test command: ${CMD} ${TARGET}"
+        eval "${CMD} ${TARGET}" 2>&1
+        exit $?
+      fi
+
+      # Auto-detect
+      if [ -f "go.mod" ]; then
+        echo "Detected: Go"
+        go test ${TARGET:-./...} 2>&1
+      elif [ -f "package.json" ]; then
+        if grep -q '"vitest"' package.json 2>/dev/null; then
+          echo "Detected: Vitest"
+          npx vitest run ${TARGET} 2>&1
+        elif grep -q '"jest"' package.json 2>/dev/null; then
+          echo "Detected: Jest"
+          npx jest ${TARGET} 2>&1
+        else
+          echo "Detected: npm test"
+          npm test ${TARGET} 2>&1
+        fi
+      elif [ -f "Cargo.toml" ]; then
+        echo "Detected: Cargo"
+        cargo test ${TARGET} 2>&1
+      elif [ -f "pyproject.toml" ] || [ -f "pytest.ini" ]; then
+        echo "Detected: pytest"
+        python -m pytest ${TARGET} 2>&1
+      elif [ -f "Makefile" ] && grep -q "^test:" Makefile 2>/dev/null; then
+        echo "Detected: Makefile"
+        make test 2>&1
+      else
+        echo "ERROR: Could not auto-detect test framework. Set test_command in plugin config."
+        exit 1
+      fi
+
+  - name: run_lint
+    description: Run the project's linter with optional auto-fix
+    parameters:
+      type: object
+      properties:
+        fix:
+          type: string
+          description: "Set to 'true' to enable auto-fix mode"
+    script: |
+      DIR="${PLUGIN_CFG_WORKING_DIRECTORY:-.}"
+      cd "$DIR" || exit 1
+
+      CMD="${PLUGIN_CFG_LINT_COMMAND}"
+      FIX="${PLUGIN_FIX}"
+
+      if [ -n "$CMD" ]; then
+        echo "Running custom lint command: ${CMD}"
+        eval "${CMD}" 2>&1
+        exit $?
+      fi
+
+      # Auto-detect
+      if [ -f "go.mod" ]; then
+        if command -v golangci-lint >/dev/null 2>&1; then
+          echo "Detected: golangci-lint"
+          if [ "$FIX" = "true" ]; then
+            golangci-lint run --fix ./... 2>&1
+          else
+            golangci-lint run ./... 2>&1
+          fi
+        else
+          echo "Detected: go vet"
+          go vet ./... 2>&1
+        fi
+      elif [ -f "package.json" ]; then
+        if [ -f ".eslintrc.js" ] || [ -f ".eslintrc.json" ] || [ -f "eslint.config.js" ] || [ -f "eslint.config.mjs" ]; then
+          echo "Detected: ESLint"
+          if [ "$FIX" = "true" ]; then
+            npx eslint --fix . 2>&1
+          else
+            npx eslint . 2>&1
+          fi
+        else
+          echo "No linter config found for Node.js project."
+        fi
+      elif [ -f "Cargo.toml" ]; then
+        echo "Detected: clippy"
+        cargo clippy 2>&1
+      elif [ -f "pyproject.toml" ]; then
+        if command -v ruff >/dev/null 2>&1; then
+          echo "Detected: ruff"
+          if [ "$FIX" = "true" ]; then
+            ruff check --fix . 2>&1
+          else
+            ruff check . 2>&1
+          fi
+        else
+          echo "Detected: flake8"
+          python -m flake8 . 2>&1
+        fi
+      else
+        echo "ERROR: Could not auto-detect linter. Set lint_command in plugin config."
+        exit 1
+      fi
+
+  - name: run_build
+    description: Verify the project compiles/builds successfully
+    parameters:
+      type: object
+      properties: {}
+    script: |
+      DIR="${PLUGIN_CFG_WORKING_DIRECTORY:-.}"
+      cd "$DIR" || exit 1
+
+      CMD="${PLUGIN_CFG_BUILD_COMMAND}"
+
+      if [ -n "$CMD" ]; then
+        echo "Running custom build command: ${CMD}"
+        eval "${CMD}" 2>&1
+        exit $?
+      fi
+
+      # Auto-detect
+      if [ -f "Makefile" ] && grep -q "^build:" Makefile 2>/dev/null; then
+        echo "Detected: make build"
+        make build 2>&1
+      elif [ -f "go.mod" ]; then
+        echo "Detected: go build"
+        go build ./... 2>&1
+      elif [ -f "package.json" ]; then
+        if grep -q '"build"' package.json 2>/dev/null; then
+          echo "Detected: npm run build"
+          npm run build 2>&1
+        else
+          echo "No build script found in package.json"
+        fi
+      elif [ -f "Cargo.toml" ]; then
+        echo "Detected: cargo build"
+        cargo build 2>&1
+      else
+        echo "ERROR: Could not auto-detect build command. Set build_command in plugin config."
+        exit 1
+      fi
+
+  - name: summary
+    description: Generate a session summary with change log, git status, and statistics
+    parameters:
+      type: object
+      properties: {}
+    script: |
+      DIR="${PLUGIN_CFG_WORKING_DIRECTORY:-.}"
+      cd "$DIR" || exit 1
+
+      echo "=== CodeFlow Session Summary ==="
+      echo ""
+
+      # Change log
+      LOG_FILE="${DIR}/.codeflow-changes.log"
+      if [ -f "$LOG_FILE" ]; then
+        echo "## Changes Made"
+        CREATES=0 MODIFIES=0 DELETES=0
+        while IFS='|' read -r op file ts; do
+          echo "  ${op}: ${file}"
+          case "$op" in
+            create) CREATES=$((CREATES + 1)) ;;
+            modify) MODIFIES=$((MODIFIES + 1)) ;;
+            delete) DELETES=$((DELETES + 1)) ;;
+          esac
+        done < "$LOG_FILE"
+        echo ""
+        echo "Stats: ${CREATES} created, ${MODIFIES} modified, ${DELETES} deleted"
+      else
+        echo "## Changes: None tracked"
+      fi
+
+      echo ""
+
+      # Git status
+      echo "## Git Status"
+      git status --short 2>/dev/null || echo "(not a git repository)"
+      echo ""
+
+      # Uncommitted changes count
+      STAGED=$(git diff --cached --numstat 2>/dev/null | wc -l)
+      UNSTAGED=$(git diff --numstat 2>/dev/null | wc -l)
+      echo "Staged files: ${STAGED}"
+      echo "Unstaged changes: ${UNSTAGED}"
+
+hooks:
+  - name: track-tool-mutations
+    description: Auto-track file mutations from write_file, edit_file, and apply_patch tool calls
+    events: ["post_tool_use"]
+    priority: 50
+    script: |
+      # Only track file-mutating tools
+      case "${PLUGIN_TOOL_NAME}" in
+        write_file|edit_file|apply_patch)
+          LOG_FILE="${PLUGIN_CFG_WORKING_DIRECTORY:-.}/.codeflow-changes.log"
+          FILE="${PLUGIN_FILE_PATH:-${PLUGIN_PATH:-unknown}}"
+          if [ -n "$FILE" ] && [ "$FILE" != "unknown" ]; then
+            if ! grep -qF "$FILE" "$LOG_FILE" 2>/dev/null; then
+              echo "modify|${FILE}|$(date -Iseconds)" >> "$LOG_FILE"
+            fi
+          fi
+          ;;
+      esac
+
+  - name: cleanup-on-session-end
+    description: Remove the temporary change tracking log when the session ends
+    events: ["session_end"]
+    priority: 200
+    script: |
+      LOG_FILE="${PLUGIN_CFG_WORKING_DIRECTORY:-.}/.codeflow-changes.log"
+      [ -f "$LOG_FILE" ] && rm -f "$LOG_FILE"
+
+skills:
+  - name: codeflow-planning
+    description: Guide for creating effective implementation plans with scope analysis and risk assessment
+    skill_md: skills/planning/SKILL.md
+
+  - name: codeflow-code-review
+    description: Methodology for thorough code review covering bugs, security, performance, and conventions
+    skill_md: skills/code-review/SKILL.md
+
+  - name: codeflow-conventions
+    description: How to detect, respect, and enforce project coding conventions
+    skill_md: skills/conventions/SKILL.md
+
+  - name: codeflow-testing
+    description: Guide for writing and running tests, including validation strategies
+    skill_md: skills/testing/SKILL.md
